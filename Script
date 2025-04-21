@@ -1,0 +1,115 @@
+-- UltimatePerformanceOptimizer.lua (LocalScript, visual-only)
+-- made by gord 
+local Players           = game:GetService("Players")
+local Lighting          = game:GetService("Lighting")
+local UserSettings      = UserSettings():GetService("UserGameSettings")
+local CollectionService = game:GetService("CollectionService")
+local RunService        = game:GetService("RunService")
+
+local localPlayer = Players.LocalPlayer
+local workspace   = workspace
+local camera      = workspace.CurrentCamera
+
+-- Tag name for heavy meshes
+local HEAVY_TAG = "Heavy"
+
+-- 1. FORCE LOW GRAPHICS (level 1)
+pcall(function()
+    UserSettings.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
+end)
+
+-- 2. CORE GRAPHICS OPTIMIZATIONS
+Lighting.GlobalShadows = false
+for _, fx in ipairs(Lighting:GetDescendants()) do
+    if fx:IsA("PostEffect") then
+        fx:Destroy()
+    end
+end
+local sky = Lighting:FindFirstChildOfClass("Sky")
+if sky then sky:Destroy() end
+pcall(function() workspace.StreamingEnabled = false end)
+
+-- 3. RECURSIVE GRAPHICS STRIPPER (textures, decals, meshes, lights, particles)
+local function optimizeDescendants(root)
+    for _, obj in ipairs(root:GetDescendants()) do
+        if obj:IsA("Decal")
+        or obj:IsA("Texture")
+        or obj:IsA("SurfaceAppearance") then
+            obj:Destroy()
+
+        elseif obj:IsA("MeshPart") then
+            obj.TextureID        = ""
+            obj.OverlayTextureID = ""
+
+        elseif obj:IsA("Light") then
+            obj.Enabled = false
+
+        elseif obj:IsA("ParticleEmitter")
+           or obj:IsA("Trail")
+           or obj:IsA("Beam") then
+            obj.Enabled = false
+        end
+    end
+end
+
+optimizeDescendants(workspace)
+if localPlayer:FindFirstChild("PlayerGui") then
+    optimizeDescendants(localPlayer.PlayerGui)
+end
+
+workspace.DescendantAdded:Connect(function(inst)
+    if inst:IsA("Decal")
+    or inst:IsA("Texture")
+    or inst:IsA("SurfaceAppearance") then
+        inst:Destroy()
+    elseif inst:IsA("MeshPart") then
+        inst.TextureID        = ""
+        inst.OverlayTextureID = ""
+    elseif inst:IsA("Light")
+        or inst:IsA("ParticleEmitter")
+        or inst:IsA("Trail")
+        or inst:IsA("Beam") then
+        pcall(function() inst.Enabled = false end)
+    end
+end)
+
+-- 4. HEAVY-MESH DETECTION & TAGGING (by bounding-box volume)
+do
+    local meshList = {}
+    for _, part in ipairs(workspace:GetDescendants()) do
+        if part:IsA("MeshPart") then
+            local size   = part.Size
+            local volume = size.X * size.Y * size.Z
+            table.insert(meshList, {part = part, volume = volume})
+        end
+    end
+    table.sort(meshList, function(a,b) return a.volume > b.volume end)
+    local TOP_N = 100
+    for i = 1, math.min(TOP_N, #meshList) do
+        CollectionService:AddTag(meshList[i].part, HEAVY_TAG)
+    end
+end
+
+workspace.DescendantAdded:Connect(function(inst)
+    if inst:IsA("MeshPart") then
+        CollectionService:AddTag(inst, HEAVY_TAG)
+    end
+end)
+
+-- 5. CAMERA‑BASED CULLING (per-frame)
+local function isBehindOrOffscreen(part)
+    local sp, onScreen = camera:WorldToViewportPoint(part.Position)
+    return (not onScreen) or (sp.Z < 0)
+end
+
+RunService.RenderStepped:Connect(function()
+    for _, part in ipairs(CollectionService:GetTagged(HEAVY_TAG)) do
+        if part.Parent then
+            if isBehindOrOffscreen(part) then
+                part.LocalTransparencyModifier = 1
+            else
+                part.LocalTransparencyModifier = 0
+            end
+        end
+    end
+end)
